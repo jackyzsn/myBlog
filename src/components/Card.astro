@@ -1,0 +1,66 @@
+---
+import type { CollectionEntry } from "astro:content";
+import { slugifyStr } from "@/utils/slugify";
+import { getPath } from "@/utils/getPath";
+import Datetime from "./Datetime.astro";
+import IconArrowRight from "@/assets/icons/IconArrowRight.svg";
+
+type Props = {
+  variant?: "h2" | "h3";
+} & CollectionEntry<"blog">;
+
+const { variant: Heading = "h2", id, data, filePath } = Astro.props;
+
+const { title, description, tags, featured, ...props } = data;
+
+const href = getPath(id, filePath);
+---
+
+<li class="my-5">
+  <a
+    href={href}
+    class:list={[
+      "group relative block rounded-xl border border-border bg-background/40 p-5 sm:p-6",
+      "transition-all duration-200",
+      "hover:-translate-y-0.5 hover:border-accent hover:bg-background/70 hover:shadow-lg hover:shadow-accent/5",
+      "focus-visible:outline-2 focus-visible:outline-dashed focus-visible:outline-accent focus-visible:outline-offset-2",
+    ]}
+  >
+    {
+      featured && (
+        <span class="absolute right-4 top-4 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold tracking-wider text-accent uppercase">
+          Featured
+        </span>
+      )
+    }
+
+    <Heading
+      style={{ viewTransitionName: slugifyStr(title.replaceAll(".", "-")) }}
+      class="text-xl font-semibold text-foreground decoration-dashed underline-offset-4 group-hover:text-accent group-hover:underline sm:text-2xl"
+    >
+      {title}
+    </Heading>
+
+    <div class="mt-2">
+      <Datetime {...props} />
+    </div>
+
+    <p class="mt-3 text-sm text-foreground/80 sm:text-base">{description}</p>
+
+    {
+      tags && tags.length > 0 && (
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          {tags.map(t => (
+            <span class="rounded-full border border-border bg-muted/30 px-2 py-0.5 text-xs text-foreground/70">
+              #{t}
+            </span>
+          ))}
+          <span class="ms-auto inline-flex items-center gap-1 text-sm text-accent opacity-0 transition-opacity group-hover:opacity-100">
+            Read
+            <IconArrowRight class="inline-block size-4 transition-transform group-hover:translate-x-0.5 rtl:-rotate-180" />
+          </span>
+        </div>
+      )
+    }
+  </a>
+</li>

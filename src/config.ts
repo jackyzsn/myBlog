@@ -1,0 +1,23 @@
+export const SITE = {
+  website: "https://myblog.jszsoft.com/",
+  author: "Jacky Zhang",
+  profile: "https://github.com/jackyzsn",
+  desc: "Notes on full-stack engineering, problem solving, and the occasional puzzle.",
+  title: "Jacky's blog",
+  ogImage: "og.jpg",
+  lightAndDarkMode: true,
+  postPerIndex: 5,
+  postPerPage: 8,
+  scheduledPostMargin: 15 * 60 * 1000,
+  showArchives: true,
+  showBackButton: true,
+  editPost: {
+    enabled: false,
+    text: "Edit page",
+    url: "",
+  },
+  dynamicOgImage: true,
+  dir: "ltr",
+  lang: "en",
+  timezone: "America/Toronto",
+} as const;
