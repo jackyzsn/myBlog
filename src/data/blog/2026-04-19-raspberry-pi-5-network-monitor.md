@@ -311,9 +311,214 @@ This shows you *by name* what every device is resolving — apps, analytics SDKs
 sudo journalctl -f | grep -E "TRAFFIC|query\[A\]"
 ```
 
-## Web Dashboard
+## Phase 10 — Text Log Files (rsyslog)
 
-The Pi runs a web dashboard on port 8080 — a world-map visualization of every connection, filterable by country and device.
+On modern Raspberry Pi OS (Bookworm), all logs go to journald only — there is no `/var/log/kern.log` or `/var/log/syslog` by default. Install rsyslog to get traditional text files that are easy to grep and parse:
+
+```bash
+sudo apt install -y rsyslog
+sudo systemctl enable --now rsyslog
+```
+
+After a minute you'll have:
+
+| File | Contents |
+|---|---|
+| `/var/log/kern.log` | All `[TRAFFIC]` nftables entries |
+| `/var/log/syslog` | dnsmasq DNS queries + system logs |
+
+Verify:
+
+```bash
+tail -5 /var/log/kern.log | grep TRAFFIC
+```
+
+## Phase 11 — Web Dashboard
+
+The dashboard is a world-map visualization served by nginx on port 8080. A cron job runs every 15 minutes to extract the last 7 days of traffic from the logs, geolocate each destination IP, and write a JSON file the browser reads directly — no live API calls from the client.
+
+### Install nginx and Python requests
+
+```bash
+sudo apt install -y nginx python3-requests
+```
+
+### Create the web directory
+
+```bash
+sudo mkdir -p /var/www/traffic
+```
+
+### IP extraction script
+
+This script reads `kern.log` (and any rotated compressed copies), filters for outbound traffic only (`IN=wlan0 OUT=eth0`), and writes `/tmp/traffic_raw.txt`:
+
+```bash
+sudo tee /usr/local/bin/extract-traffic.sh << 'EOF'
+#!/bin/bash
+
+{
+  cat /var/log/kern.log 2>/dev/null
+  zcat /var/log/kern.log.*.gz 2>/dev/null
+} | grep "\[TRAFFIC\]" \
+  | grep "IN=wlan0 OUT=eth0" \
+  > /tmp/traffic_raw.txt
+
+python3 /usr/local/bin/parse-traffic.py
+EOF
+
+sudo chmod +x /usr/local/bin/extract-traffic.sh
+```
+
+### Geo-lookup + JSON builder
+
+This Python script parses the raw log lines, extracts source device IP, destination IP, and destination port, geolocates each unique destination using ip-api.com (with a local cache so subsequent runs are fast), and writes `ips.json`:
+
+```bash
+sudo tee /usr/local/bin/parse-traffic.py << 'EOF'
+import json, re, datetime, time, requests
+
+def geoip(ip):
+    try:
+        r = requests.get('http://ip-api.com/json/'+ip+'?fields=country,countryCode,city,org,lat,lon', timeout=5)
+        d = r.json()
+        if d.get('countryCode'):
+            return {'country': d['countryCode'], 'city': d.get('city','Unknown'),
+                    'org': re.sub(r'^AS\d+\s*','',d.get('org','Unknown')),
+                    'lat': d.get('lat',0), 'lon': d.get('lon',0)}
+    except: pass
+    try:
+        r = requests.get('https://ipapi.co/'+ip+'/json/', timeout=5)
+        d = r.json()
+        if d.get('country_code'):
+            return {'country': d['country_code'], 'city': d.get('city','Unknown'),
+                    'org': re.sub(r'^AS\d+\s*','',d.get('org',d.get('asn','Unknown'))),
+                    'lat': d.get('latitude',0), 'lon': d.get('longitude',0)}
+    except: pass
+    return {'country':'??', 'city':'Unknown', 'org':'Unknown', 'lat':0, 'lon':0}
+
+pairs = {}
+with open('/tmp/traffic_raw.txt') as f:
+    for line in f:
+        src = re.search(r'(?<!MAC)SRC=(\S+)', line)
+        dst = re.search(r'(?<!MAC)DST=(\S+)', line)
+        dpt = re.search(r'DPT=(\S+)', line)
+        if not src or not dst:
+            continue
+        s = src.group(1)
+        d = dst.group(1)
+        port = dpt.group(1) if dpt else '?'
+        # Skip private/local destinations
+        if any(d.startswith(p) for p in ['192.168.','10.','172.','127.','d8:']):
+            continue
+        key = s+'|'+d+'|'+port
+        pairs[key] = pairs.get(key, 0) + 1
+
+unique_dsts = list(set(k.split('|')[1] for k in pairs.keys()))
+print('Geolocating '+str(len(unique_dsts))+' unique IPs...')
+
+# Load geo cache (avoids re-looking up known IPs)
+try:
+    with open('/var/www/traffic/geo_cache.json') as f:
+        geo_cache = json.load(f)
+except:
+    geo_cache = {}
+
+new_ips = [ip for ip in unique_dsts if ip not in geo_cache or geo_cache[ip]['country'] == '??']
+print('Looking up '+str(len(new_ips))+' new/unknown IPs...')
+
+for i, ip in enumerate(new_ips):
+    geo = geoip(ip)
+    geo_cache[ip] = geo
+    print('  ['+str(i+1)+'/'+str(len(new_ips))+'] '+ip+' -> '+geo['country']+' '+geo['city'])
+    time.sleep(0.5)  # avoid rate limiting
+
+with open('/var/www/traffic/geo_cache.json', 'w') as f:
+    json.dump(geo_cache, f)
+
+out_list = []
+for key, count in sorted(pairs.items(), key=lambda x: -x[1]):
+    src, dst, port = key.split('|')
+    geo = geo_cache.get(dst, {'country':'??','city':'Unknown','org':'Unknown','lat':0,'lon':0})
+    out_list.append({'src': src, 'dst': dst, 'port': port, 'count': count, **geo})
+
+out = {
+    'updated': datetime.datetime.now().isoformat(),
+    'connections': out_list
+}
+
+with open('/var/www/traffic/ips.json', 'w') as f:
+    json.dump(out, f)
+
+print('Written '+str(len(out_list))+' connections')
+EOF
+
+sudo chmod +x /usr/local/bin/parse-traffic.py
+```
+
+Test it — you should see it geolocating IPs one by one:
+
+```bash
+sudo /usr/local/bin/extract-traffic.sh
+```
+
+Expected output:
+
+```
+Geolocating 95 unique IPs...
+Looking up 95 new/unknown IPs...
+  [1/95] 142.250.80.46 -> US Mountain View
+  [2/95] 155.102.54.140 -> US Minkler
+  ...
+Written 202 connections
+```
+
+After the first run, subsequent runs only look up new IPs — the geo cache makes it fast.
+
+### nginx config
+
+```bash
+sudo tee /etc/nginx/sites-available/traffic << 'EOF'
+server {
+    listen 8080;
+    root /var/www/traffic;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+        add_header Cache-Control "no-cache";
+    }
+}
+EOF
+
+sudo ln -s /etc/nginx/sites-available/traffic /etc/nginx/sites-enabled/traffic
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### Cron job (every 15 minutes)
+
+```bash
+sudo crontab -e
+```
+
+Add at the bottom:
+
+```
+*/15 * * * * /usr/local/bin/extract-traffic.sh >> /var/log/traffic-extract.log 2>&1
+```
+
+### The dashboard HTML
+
+The dashboard (`/var/www/traffic/index.html`) is a self-contained dark-themed page built on [Leaflet.js](https://leafletjs.com/) and [OpenStreetMap](https://openstreetmap.org/). It reads `ips.json` on load, plots each destination as a bubble on a world map, and draws connection lines from your home location (Toronto). All geo data is pre-baked in the JSON — no live API calls from the browser.
+
+Key features:
+- **Country filter** buttons (All / China / USA / Canada / Other)
+- **Device filter** buttons — one per device, colour-coded (e.g. `*.57`, `*.157`)
+- **Destinations** sidebar tab — IP, port, country, org, hit count
+- **By Device** tab — every `src → dst` pair with port and hits
+- **By Port** tab — port breakdown with service names (443 = HTTPS, 53 = DNS, etc.)
+- Bubble size = hit count; line colour = country or device depending on active filter
 
 ![Dashboard overview: 6 devices, 43 countries, 447k total hits — connections fanning out from Toronto](/assets/images/posts/P20260419/dashboard-overview.png)
 
@@ -324,6 +529,10 @@ The "By Device" tab breaks down each connection by source device (shown as the l
 Filtering to **China** is where things get interesting. Of 447k total hits, 1,919 destination IPs resolve to China — mostly Tencent and Alibaba infrastructure. Most came from one device (`*.57`):
 
 ![China filter: all connections from Toronto pointing to Chinese IPs (Tencent, Alibaba, ChinaTelecom)](/assets/images/posts/P20260419/dashboard-china.png)
+
+### A note on unknown countries
+
+ip-api.com occasionally misses APNIC/CNNIC blocks. If you see `?? Unknown` entries, the geo cache stores them and retries on the next cron run. The fallback is ipapi.co. For truly stubborn IPs you can look them up manually on [ip-api.com](https://ip-api.com) and patch `geo_cache.json` directly.
 
 ## Useful One-Liners
 
