@@ -20,9 +20,10 @@ const href = getPath(id, filePath);
   <a
     href={href}
     class:list={[
-      "group relative block rounded-xl border border-border bg-background/40 p-5 sm:p-6",
-      "transition-all duration-200",
-      "hover:-translate-y-0.5 hover:border-accent hover:bg-background/70 hover:shadow-lg hover:shadow-accent/5",
+      "group relative block overflow-hidden rounded-xl p-5 sm:p-6",
+      "bg-gradient-to-br from-background/80 via-background/50 to-background/20",
+      "shadow-lg shadow-foreground/10 ring-1 ring-inset ring-foreground/5 transition-all duration-200",
+      "hover:-translate-y-0.5 hover:shadow-xl hover:shadow-accent/20 hover:ring-accent/30 hover:from-background/90 hover:via-background/60 hover:to-accent/10",
       "focus-visible:outline-2 focus-visible:outline-dashed focus-visible:outline-accent focus-visible:outline-offset-2",
     ]}
   >
