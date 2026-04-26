@@ -174,8 +174,9 @@ table inet filter {
     }
     chain forward {
         type filter hook forward priority filter;
-        # Log every forwarded packet with structured prefix
-        log prefix "[TRAFFIC] " flags all;
+        # Log only new connections (one line per connection, not per packet).
+        # Without ct state new, kern.log can grow to 1GB+ in a couple of days.
+        ct state new log prefix "[TRAFFIC] " flags all;
         accept;
     }
     chain output {
@@ -351,7 +352,7 @@ sudo mkdir -p /var/www/traffic
 
 ### IP extraction script
 
-This script reads `kern.log` (and any rotated compressed copies), filters for outbound traffic only (`IN=wlan0 OUT=eth0`), and writes `/tmp/traffic_raw.txt`:
+This script reads `kern.log`, the just-rotated `kern.log.1` (uncompressed for one cycle thanks to `delaycompress`), and any older `.gz` archives, then filters for outbound traffic only (`IN=wlan0 OUT=eth0`) and writes `/tmp/traffic_raw.txt`. The `-a` flag on grep treats binary data as text — needed because compressed log archives can briefly look binary to grep:
 
 ```bash
 sudo tee /usr/local/bin/extract-traffic.sh << 'EOF'
@@ -359,9 +360,10 @@ sudo tee /usr/local/bin/extract-traffic.sh << 'EOF'
 
 {
   cat /var/log/kern.log 2>/dev/null
+  cat /var/log/kern.log.1 2>/dev/null
   zcat /var/log/kern.log.*.gz 2>/dev/null
-} | grep "\[TRAFFIC\]" \
-  | grep "IN=wlan0 OUT=eth0" \
+} | grep -a "\[TRAFFIC\]" \
+  | grep -a "IN=wlan0 OUT=eth0" \
   > /tmp/traffic_raw.txt
 
 python3 /usr/local/bin/parse-traffic.py
